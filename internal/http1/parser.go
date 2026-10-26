@@ -2,6 +2,9 @@ package http1
 
 import (
 	"bufio"
+	"compress/bzip2"
+	"compress/flate"
+	"compress/gzip"
 	"fmt"
 	"io"
 	"net/http"
@@ -36,15 +39,20 @@ func ParseRequest(reader *bufio.Reader) (*http.Request, error) {
 	}
 	request.Header = header
 
-	if len(header["Host"]) == 0 {
-		return nil, fmt.Errorf("no Host header")
+	if len(header["Host"]) != 1 {
+		return nil, fmt.Errorf("not exactly one host header")
 	}
 	request.Host = header["Host"][0]
 
 	if len(header["Content-Length"]) == 0 {
 		request.ContentLength = 0
-	} else {
+	} else if len(header["Content-Length"]) == 1 {
 		request.ContentLength, err = strconv.ParseInt(header["Content-Length"][0], 10, 64)
+		if err != nil || request.ContentLength < 0 {
+			return nil, fmt.Errorf("invalid Content-Length")
+		}
+	} else {
+		return nil, fmt.Errorf("more than one Content-Length header")
 	}
 
 	url, err := url2.Parse(path)
@@ -53,24 +61,76 @@ func ParseRequest(reader *bufio.Reader) (*http.Request, error) {
 	}
 	request.URL = url
 
-	limitedReader := io.LimitReader(reader, request.ContentLength)
-	readCloser := io.NopCloser(limitedReader)
-	request.Body = readCloser
+	if len(header["Transfer-Encoding"]) != 0 && len(header["Content-Length"]) != 0 {
+		return nil, fmt.Errorf("cannot use both Transfer-Encoding and Content-Length")
+	}
+	encodings := header["Transfer-Encoding"]
+	if len(encodings) > 1 {
+		for i := range encodings {
+			if i == len(encodings)-1 {
+				if encodings[i] != "chunked" {
+					return nil, fmt.Errorf("invalid Transfer-Encoding header")
+				}
+			} else {
+				if encodings[i] == "chunked" {
+					return nil, fmt.Errorf("invalid Transfer-Encoding header")
+				}
+			}
+		}
+		return nil, fmt.Errorf("invalid Transfer-Encoding header")
+	}
+
+	var returnReader io.ReadCloser
+	if len(encodings) == 0 {
+		limitedReader := io.LimitReader(reader, request.ContentLength)
+		returnReader = io.NopCloser(limitedReader)
+	} else {
+		intermediateReader := io.NopCloser(reader)
+		for _, encoding := range encodings {
+			switch encoding {
+			case "chunked":
+				panic("unimplemented")
+			case "gzip":
+				intermediateReader, err = gzip.NewReader(intermediateReader)
+				if err != nil {
+					return nil, fmt.Errorf("could not decompress chunked body: %w", err)
+				}
+			case "deflate":
+				intermediateReader = flate.NewReader(intermediateReader)
+			case "br":
+				intermediateReader = io.NopCloser(bzip2.NewReader(intermediateReader))
+			case "identity":
+				continue
+			default:
+				return nil, fmt.Errorf("unknown encoding: %s", encoding)
+
+			}
+		}
+		returnReader = intermediateReader
+	}
+
+	request.Body = returnReader
 
 	return request, nil
 }
 
 func parseMethodPathVersion(reader *bufio.Reader) (string, string, string, error) {
 	line, prefix, err := reader.ReadLine()
+	if strings.TrimSpace(string(line)) == "" { // Allow for one empty line at the start
+		line, prefix, err = reader.ReadLine()
+	}
 	if err != nil {
-		return "", "", "", fmt.Errorf("failed to read line: %w", err)
+		return "", "", "", fmt.Errorf("failed to read request line: %w", err)
 	}
 	if prefix {
-		return "", "", "", fmt.Errorf("line is too long: %d", line)
+		return "", "", "", fmt.Errorf("request line is too long: %d", line)
+	}
+	if strings.Contains(string(line), "\r") {
+		return "", "", "", fmt.Errorf("request line may not contain CR: %s", line)
 	}
 	substrings := strings.Split(string(line), " ")
 	if len(substrings) != 3 {
-		return "", "", "", fmt.Errorf("invalid method path line: %s", line)
+		return "", "", "", fmt.Errorf("invalid request line: %s", line)
 	}
 	for i := range substrings {
 		substrings[i] = strings.TrimSpace(substrings[i])
@@ -91,11 +151,20 @@ func parseHeaders(reader *bufio.Reader) (http.Header, error) {
 		if string(line) == "" {
 			break
 		}
+		if strings.HasPrefix(string(line), " ") {
+			return nil, fmt.Errorf("header lines may not start with a space: %s", line)
+		}
+		if strings.Contains(string(line), "\r") {
+			return nil, fmt.Errorf("header lines may not contain CR: %s", line)
+		}
 		parts := strings.SplitN(string(line), ":", 2)
 		if len(parts) != 2 {
 			return nil, fmt.Errorf("invalid header line: %s", line)
 		}
-		header.Add(strings.TrimSpace(parts[0]), strings.TrimSpace(parts[1]))
+		splits := strings.Split(parts[1], ",")
+		for i := range splits {
+			header.Add(strings.TrimSpace(parts[0]), strings.TrimSpace(splits[i]))
+		}
 	}
 	return header, nil
 }
