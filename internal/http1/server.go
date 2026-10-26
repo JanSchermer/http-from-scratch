@@ -47,12 +47,4 @@ func HandleConnection(conn net.Conn, mux http.Handler) error {
 	}
 	mux.ServeHTTP(response, request)
 	return nil
-	/*
-		if err != nil {
-			response.WriteHeader(http.StatusBadRequest)
-			return nil
-		}
-		response.WriteHeader(http.StatusOK)
-		return nil
-	*/
 }
