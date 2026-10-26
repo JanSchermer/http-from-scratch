@@ -2,13 +2,15 @@ package http1
 
 import (
 	"bufio"
+	"crypto/tls"
 	"fmt"
 	"net"
 	"net/http"
 )
 
 func ListenAndServe(addr string, handler http.Handler) error {
-	listener, err := net.Listen("tcp", addr)
+	tlsConfig := GetTLSConfig()
+	listener, err := tls.Listen("tcp", addr, tlsConfig)
 	if err != nil {
 		return fmt.Errorf("listen: %w", err)
 	}
