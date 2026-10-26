@@ -53,7 +53,8 @@ func ParseRequest(reader *bufio.Reader) (*http.Request, error) {
 	}
 	request.URL = url
 
-	readCloser := io.NopCloser(reader)
+	limitedReader := io.LimitReader(reader, request.ContentLength)
+	readCloser := io.NopCloser(limitedReader)
 	request.Body = readCloser
 
 	return request, nil
