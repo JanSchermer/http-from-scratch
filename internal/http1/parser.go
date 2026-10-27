@@ -2,6 +2,7 @@ package http1
 
 import (
 	"bufio"
+	"bytes"
 	"compress/bzip2"
 	"compress/flate"
 	"compress/gzip"
@@ -73,59 +74,26 @@ func ParseRequest(reader *bufio.Reader) (*http.Request, error) {
 	}
 	request.URL = url
 
-	if len(header["Transfer-Encoding"]) != 0 && len(header["Content-Length"]) != 0 {
-		return nil, fmt.Errorf("cannot use both Transfer-Encoding and Content-Length")
-	}
 	encodings := header["Transfer-Encoding"]
 	if len(encodings) > 1 {
 		for i := range encodings {
-			if i == len(encodings)-1 {
-				if encodings[i] != "chunked" {
-					return nil, fmt.Errorf("invalid Transfer-Encoding header")
-				}
-			} else {
-				if encodings[i] == "chunked" {
-					return nil, fmt.Errorf("invalid Transfer-Encoding header")
-				}
+			isLast := i == len(encodings)-1
+			isChunked := encodings[i] != "chunked"
+			if (!isLast && isChunked) || (isLast && !isChunked) {
+				return nil, fmt.Errorf("invalid Transfer-Encoding header")
 			}
 		}
 		return nil, fmt.Errorf("invalid Transfer-Encoding header")
 	}
 
-	var returnReader io.ReadCloser
-	if len(encodings) == 0 {
-		if len(header["Content-Length"]) == 0 {
-			returnReader = io.NopCloser(reader)
-		} else {
-			limitedReader := io.LimitReader(reader, request.ContentLength)
-			returnReader = io.NopCloser(limitedReader)
+	if len(request.Header["Transfer-Encoding"]) > 0 || len(request.Header["Content-Length"]) > 0 {
+		request.Body, err = parseBody(reader, request)
+		if err != nil {
+			return nil, fmt.Errorf("could not parse body: %w", err)
 		}
 	} else {
-		intermediateReader := io.NopCloser(reader)
-		for _, encoding := range encodings {
-			switch encoding {
-			case "chunked":
-				panic("unimplemented")
-			case "gzip":
-				intermediateReader, err = gzip.NewReader(intermediateReader)
-				if err != nil {
-					return nil, fmt.Errorf("could not decompress chunked body: %w", err)
-				}
-			case "deflate":
-				intermediateReader = flate.NewReader(intermediateReader)
-			case "br":
-				intermediateReader = io.NopCloser(bzip2.NewReader(intermediateReader))
-			case "identity":
-				continue
-			default:
-				return nil, fmt.Errorf("unknown encoding: %s", encoding)
-
-			}
-		}
-		returnReader = intermediateReader
+		request.Body = io.NopCloser(bytes.NewReader([]byte{}))
 	}
-
-	request.Body = returnReader
 
 	return request, nil
 }
@@ -176,8 +144,89 @@ func parseHeaders(reader *bufio.Reader) (http.Header, error) {
 		}
 		splits := strings.Split(parts[1], ",")
 		for i := range splits {
-			header.Add(strings.TrimSpace(parts[0]), strings.TrimSpace(splits[i]))
+			header.Add(strings.TrimSpace(parts[0]), strings.ToLower(strings.TrimSpace(splits[i])))
 		}
 	}
 	return header, nil
+}
+
+func parseBody(reader io.Reader, request *http.Request) (io.ReadCloser, error) {
+	encodings := request.Header["Transfer-Encoding"]
+	finalReader := reader
+	var err error
+	chunked := false
+	for _, encoding := range encodings {
+		switch encoding {
+		case "chunked":
+			chunked = true
+		case "gzip":
+			finalReader, err = gzip.NewReader(finalReader)
+			if err != nil {
+				return nil, fmt.Errorf("could not decompress chunked body: %w", err)
+			}
+		case "deflate":
+			finalReader = flate.NewReader(finalReader)
+		case "br":
+			finalReader = io.NopCloser(bzip2.NewReader(finalReader))
+		case "identity":
+			continue
+		default:
+			return nil, fmt.Errorf("unknown encoding: %s", encoding)
+		}
+	}
+	var data []byte
+	if chunked {
+		data, err = readChunks(finalReader)
+		if err != nil {
+			return nil, fmt.Errorf("could not read chunks: %w", err)
+		}
+	} else {
+		data = make([]byte, request.ContentLength)
+		_, err = io.ReadAtLeast(finalReader, data, int(request.ContentLength))
+		if err != nil {
+			return nil, fmt.Errorf("could not read data: %w", err)
+		}
+	}
+	request.ContentLength = int64(len(data))
+	dataReader := bytes.NewReader(data)
+	return io.NopCloser(dataReader), nil
+}
+
+func readChunks(reader io.Reader) ([]byte, error) {
+	bufReader := bufio.NewReader(reader)
+	data := make([]byte, 0)
+	for {
+		line, _, err := bufReader.ReadLine()
+		if err != nil {
+			return nil, fmt.Errorf("could not read chunk length: %w", err)
+		}
+		line = []byte(strings.Split(string(line), ";")[0])
+		chunkLength, err := strconv.ParseInt(string(line), 16, 64)
+		if err != nil {
+			return nil, fmt.Errorf("could not parse chunk length: %w", err)
+		}
+		if chunkLength == 0 {
+			for {
+				line, _, err = bufReader.ReadLine()
+				if err != nil {
+					return nil, fmt.Errorf("could not read chunk: %w", err)
+				}
+				if len(line) == 0 {
+					break
+				}
+			}
+			break
+		}
+		chunkData := make([]byte, chunkLength+2)
+		_, err = io.ReadAtLeast(reader, chunkData, int(chunkLength+2))
+		if err != nil {
+			return nil, fmt.Errorf("could not read chunk data: %w", err)
+		}
+		// Last two bytes need to be \r\n
+		if string(chunkData[chunkLength:chunkLength+2]) != "\r\n" {
+			return nil, fmt.Errorf("invalid chunk termination: %s", string(chunkData[chunkLength-3:chunkLength]))
+		}
+		data = append(data, chunkData[:chunkLength]...)
+	}
+	return data, nil
 }
