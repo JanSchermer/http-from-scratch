@@ -20,9 +20,19 @@ func ParseRequest(reader *bufio.Reader) (*http.Request, error) {
 	if err != nil {
 		return nil, err
 	}
+	if version == "" {
+		return nil, nil // Client disconnected
+	}
 	request.Method = method
 	request.Proto = version
-	versionNums := strings.Split(strings.Split(version, "/")[1], ".")
+	versionStrs := strings.Split(version, "/")
+	if len(versionStrs) != 2 || versionStrs[0] != "HTTP" {
+		return nil, fmt.Errorf("invalid version string: %s", version)
+	}
+	versionNums := strings.Split(versionStrs[1], ".")
+	if len(versionNums) != 2 {
+		return nil, fmt.Errorf("invalid version string: %s", version)
+	}
 	request.ProtoMajor, err = strconv.Atoi(versionNums[0])
 	if err != nil {
 		return nil, err
@@ -44,15 +54,17 @@ func ParseRequest(reader *bufio.Reader) (*http.Request, error) {
 	}
 	request.Host = header["Host"][0]
 
-	if len(header["Content-Length"]) == 0 {
-		request.ContentLength = 0
-	} else if len(header["Content-Length"]) == 1 {
-		request.ContentLength, err = strconv.ParseInt(header["Content-Length"][0], 10, 64)
+	request.ContentLength = 0
+	for i := range len(header["Content-Length"]) {
+		length, err := strconv.ParseInt(header["Content-Length"][i], 10, 64)
 		if err != nil || request.ContentLength < 0 {
 			return nil, fmt.Errorf("invalid Content-Length")
 		}
-	} else {
-		return nil, fmt.Errorf("more than one Content-Length header")
+		if i == 0 {
+			request.ContentLength = length
+		} else if request.ContentLength != length {
+			return nil, fmt.Errorf("invalid Content-Length")
+		}
 	}
 
 	url, err := url2.Parse(path)
@@ -82,8 +94,12 @@ func ParseRequest(reader *bufio.Reader) (*http.Request, error) {
 
 	var returnReader io.ReadCloser
 	if len(encodings) == 0 {
-		limitedReader := io.LimitReader(reader, request.ContentLength)
-		returnReader = io.NopCloser(limitedReader)
+		if len(header["Content-Length"]) == 0 {
+			returnReader = io.NopCloser(reader)
+		} else {
+			limitedReader := io.LimitReader(reader, request.ContentLength)
+			returnReader = io.NopCloser(limitedReader)
+		}
 	} else {
 		intermediateReader := io.NopCloser(reader)
 		for _, encoding := range encodings {
@@ -116,11 +132,8 @@ func ParseRequest(reader *bufio.Reader) (*http.Request, error) {
 
 func parseMethodPathVersion(reader *bufio.Reader) (string, string, string, error) {
 	line, prefix, err := reader.ReadLine()
-	if strings.TrimSpace(string(line)) == "" { // Allow for one empty line at the start
-		line, prefix, err = reader.ReadLine()
-	}
 	if err != nil {
-		return "", "", "", fmt.Errorf("failed to read request line: %w", err)
+		return "", "", "", nil
 	}
 	if prefix {
 		return "", "", "", fmt.Errorf("request line is too long: %d", line)

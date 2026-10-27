@@ -28,25 +28,40 @@ func ListenAndServe(addr string, handler http.Handler) error {
 		}
 		err = HandleConnection(conn, handler)
 		if err != nil {
-			fmt.Printf(err.Error())
+			fmt.Println(err.Error())
 		}
 	}
 }
 
 func HandleConnection(conn net.Conn, mux http.Handler) error {
-	reader := bufio.NewReader(conn)
-	request, err := ParseRequest(reader)
-	response := NewResponse(conn)
 	defer func(conn net.Conn) {
-		err = conn.Close()
+		err := conn.Close()
 		if err != nil {
 			_ = fmt.Errorf("close connection: %w", err)
 		}
 	}(conn)
-	if err != nil {
-		response.WriteHeader(http.StatusBadRequest)
-		return fmt.Errorf("parse request: %w", err)
+	reader := bufio.NewReader(conn)
+	for {
+		request, err := ParseRequest(reader)
+		response := NewResponse(conn)
+		if err != nil {
+			response.WriteHeader(http.StatusBadRequest)
+			response.Send()
+			return nil
+		}
+		if request == nil {
+			return nil // Client disconnected
+		}
+		if request.Proto != "HTTP/1.1" && request.Proto != "HTTP/1.0" {
+			response.WriteHeader(http.StatusHTTPVersionNotSupported)
+			response.Send()
+			return nil
+		}
+		mux.ServeHTTP(response, request)
+		response.Send()
+		if (request.ProtoMinor == 0 && (len(request.Header["Connection"]) == 0 || request.Header["Connection"][0] != "keep-alive")) ||
+			(len(request.Header["Connection"]) > 0 && request.Header["Connection"][0] == "close") {
+			return nil // Disconnect by default
+		}
 	}
-	mux.ServeHTTP(response, request)
-	return nil
 }
