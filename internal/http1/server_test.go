@@ -257,7 +257,7 @@ const testTimeout = 2 * time.Second
 // returns a handle for the other end. The HandleConnection error is captured
 // in errCh (a panic is converted into an error so the suite fails cleanly
 // while the server is still unimplemented).
-func newServerTest(t *testing.T, mux http.Handler) *serverTest {
+func newServerTest(t *testing.T, mux Handler) *serverTest {
 	t.Helper()
 	client, server := newMemPipe()
 	errCh := make(chan error, 1)
@@ -393,31 +393,35 @@ func (st *serverTest) closeClient() {
 // newTestHandler returns an http.Handler whose responses are derived from the
 // parsed request, so asserting on the response also asserts that the server
 // parsed the request correctly.
-func newTestHandler() http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch {
-		case r.URL.Path == "/hello":
-			_, _ = w.Write([]byte("hello"))
-		case r.URL.Path == "/echo":
-			_, _ = io.Copy(w, r.Body)
-		case r.URL.Path == "/upper":
-			b, _ := io.ReadAll(r.Body)
-			_, _ = w.Write([]byte(strings.ToUpper(string(b))))
-		case r.URL.Path == "/headers":
-			w.Header().Set("X-Test", "yes")
-			_, _ = w.Write([]byte("headers set"))
-		case strings.HasPrefix(r.URL.Path, "/status/"):
-			code, err := strconv.Atoi(strings.TrimPrefix(r.URL.Path, "/status/"))
-			if err != nil {
-				http.NotFound(w, r)
-				return
-			}
-			w.WriteHeader(code)
-			_, _ = fmt.Fprintf(w, "status %d", code)
-		default:
-			http.NotFound(w, r)
-		}
+func newTestHandler() Handler {
+	mux := NewServeMux()
+	mux.HandleFunc("/hello", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("hello"))
 	})
+
+	mux.HandleFunc("/echo", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(w, r.Body)
+	})
+
+	mux.HandleFunc("/upper", func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		_, _ = w.Write([]byte(strings.ToUpper(string(b))))
+	})
+
+	mux.HandleFunc("/headers", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Test", "yes")
+		_, _ = w.Write([]byte("headers set"))
+	})
+
+	mux.HandleFunc("/status/{statusCode}", func(w http.ResponseWriter, r *http.Request) {
+		code, err := strconv.Atoi(r.PathValue("statusCode"))
+		if err != nil {
+			return
+		}
+		w.WriteHeader(code)
+		_, _ = fmt.Fprintf(w, "status %d", code)
+	})
+	return mux
 }
 
 // ---------------------------------------------------------------------------
