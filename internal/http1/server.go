@@ -2,7 +2,6 @@ package http1
 
 import (
 	"bufio"
-	"crypto/tls"
 	"fmt"
 	"httpServer/internal/monitoring"
 	"net"
@@ -13,8 +12,9 @@ import (
 )
 
 func ListenAndServe(addr string, monitor *monitoring.Monitor) error {
-	tlsConfig := GetTLSConfig()
-	listener, err := tls.Listen("tcp", addr, tlsConfig)
+	//tlsConfig := GetTLSConfig()
+	//listener, err := tls.Listen("tcp", addr, tlsConfig)
+	listener, err := net.Listen("tcp", addr)
 	if err != nil {
 		return fmt.Errorf("listen: %w", err)
 	}

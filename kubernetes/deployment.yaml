@@ -1,0 +1,18 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: http-from-scratch
+
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      name: http-from-scratch
+  template:
+    metadata:
+      labels:
+        name: http-from-scratch
+    spec:
+      containers:
+        - name: http-from-scratch
+          image: http-from-scratch

@@ -33,7 +33,7 @@ func (m *Monitor) AddRequestDuration(duration time.Duration) {
 }
 
 func StartTransmitting() {
-	err := metrics.InitPush("http://localhost:8428/api/v1/import/prometheus", 5*time.Second, `instance="local"`, true)
+	err := metrics.InitPush("http://vmsingle-vm-victoria-metrics-k8s-stack:8428/api/v1/import/prometheus", 5*time.Second, `instance="local"`, true)
 	if err != nil {
 		panic(err)
 	}
