@@ -1,4 +1,4 @@
-package users
+package http1
 
 import (
 	"encoding/json"
@@ -10,9 +10,9 @@ type User struct {
 	Name string `json:"name"`
 }
 
-func InitUsersService() {
+func InitUsersService(mux *ServeMux) {
 	users := make([]User, 0, 10)
-	http.HandleFunc("/users", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/users", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodPost {
 			body, err := io.ReadAll(r.Body)
 			defer func(Body io.ReadCloser) {

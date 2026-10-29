@@ -2,15 +2,16 @@ package main
 
 import (
 	"httpServer/internal/http1"
-	"httpServer/internal/users"
+	"httpServer/internal/monitoring"
 )
 
 const addr = ":8080"
 
 func main() {
-	users.InitUsersService()
+	monitor := monitoring.NewMonitor()
+	monitoring.StartTransmitting()
 
-	if err := http1.ListenAndServe(addr, nil); err != nil {
+	if err := http1.ListenAndServe(addr, monitor); err != nil {
 		panic(err)
 	}
 }
